@@ -196,107 +196,55 @@ def load_files_from_s3(bucket_name, folder_prefix, folder_path):
     return obj_cnt, no_file_found
 
 
-def contact_delay_analyzer(file_path=None):
-    """
-    创建Streamlit应用来分析和可视化联系记录数据。
-
-    功能：
-    1. 根据phonenumber统计和分析通话数据
-    2. 计算connectedtosystemtimestamp和initiationtimestamp之间的时间差（秒）
-    3. 按phonenumber分组统计contact数量和通话时间
-
-    参数：
-    - file_path: 字符串，CSV文件路径
-
-    返回值：
-    - 无，直接在Streamlit界面上显示结果
-    """
-    if 'show_analysis' not in st.session_state:
-        st.session_state.show_analysis = True
-    st.title("电话号码通话分析工具")
-
-    # 读取数据
-    df = None
-    if file_path:
-        df = pd.read_csv(file_path)
-    else:
-        st.warning(f"数据中未找到{file_path}")
-
-    if df is None:
-        st.info("请上传CSV文件或提供数据")
-        return
-
-    # 检查必要的列是否存在
-    required_cols = ['customerendpoint',
-                     'connectedtosystemtimestamp', 'initiationtimestamp']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        st.error(f"数据中缺少必要的列: {missing_cols}")
-        return
-
-    # 数据预处理
-    st.subheader("数据预处理")
-    with st.expander("查看原始数据", expanded=False):
-        st.dataframe(df)
-
-    data_csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="下载完整原始数据",
-        data=data_csv,
-        file_name="contatcs.csv",
-        mime="text/csv"
-    )
-
-    # 从customerendpoint中提取电话号码
-    def extract_phone_number(endpoint_str):
-        try:
-            if pd.isna(endpoint_str):
-                return None
-            if isinstance(endpoint_str, str):
-                endpoint_data = eval(endpoint_str)
-            else:
-                endpoint_data = endpoint_str
-            return endpoint_data.get('address')
-        except:
+def extract_phone_number(endpoint_str):
+    """Extract phone number from customerendpoint field"""
+    try:
+        if pd.isna(endpoint_str):
             return None
+        endpoint_data = eval(endpoint_str) if isinstance(
+            endpoint_str, str) else endpoint_str
+        return endpoint_data.get('address')
+    except:
+        return None
 
+
+def prepare_data(df):
+    """Prepare and clean data for analysis"""
+    # Extract phone numbers
     df['phonenumber'] = df['customerendpoint'].apply(extract_phone_number)
 
-    # 将时间戳列转换为日期时间格式
-    for col in ['connectedtosystemtimestamp', 'initiationtimestamp']:
+    # Convert timestamps
+    timestamp_cols = ['connectedtosystemtimestamp', 'initiationtimestamp']
+    for col in timestamp_cols:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col])
 
-    # 计算时间差（秒）
+    # Calculate delay
     df['delay_seconds'] = (df['connectedtosystemtimestamp'] -
                            df['initiationtimestamp']).dt.total_seconds()
 
-    # 过滤掉phonenumber为空的记录
-    df = df.dropna(subset=['phonenumber'])
+    # Filter valid phone numbers
+    return df.dropna(subset=['phonenumber'])
 
-    # 按phonenumber分组统计
-    st.subheader("电话号码通话统计")
-    phone_stats = df.groupby('phonenumber')['delay_seconds'].agg([
-        'count',  # contact数量
-        'min',    # 最小通话时间
-        'mean',   # 平均通话时间
-        'max'     # 最大通话时间
+
+def calculate_phone_stats(df):
+    """Calculate phone number statistics"""
+    stats = df.groupby('phonenumber')['delay_seconds'].agg([
+        'count', 'min', 'mean', 'max'
     ]).reset_index()
 
-    # 重命名列
-    phone_stats.columns = ['phonenumber', 'contact_count',
-                           'min_delay', 'avg_delay', 'max_delay']
+    stats.columns = ['phonenumber', 'contact_count',
+                     'min_delay', 'avg_delay', 'max_delay']
 
-    # 对于只有一个contact的phonenumber，平均值和最大值设为空
-    phone_stats.loc[phone_stats['contact_count'] == 1, 'avg_delay'] = None
-    phone_stats.loc[phone_stats['contact_count'] == 1, 'max_delay'] = None
+    # Set avg and max to None for single contact phones
+    single_contact_mask = stats['contact_count'] == 1
+    stats.loc[single_contact_mask, ['avg_delay', 'max_delay']] = None
 
-    # 显示统计结果
-    st.write("电话号码通话统计表：")
-    st.dataframe(phone_stats)
+    return stats
 
-    # 基本统计信息
-    st.subheader("统计概览")
+
+def display_metrics(phone_stats, df):
+    """Display summary metrics"""
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -304,8 +252,9 @@ def contact_delay_analyzer(file_path=None):
         st.metric("总通话记录数", len(df))
 
     with col2:
-        multi_contact_phones = phone_stats[phone_stats['contact_count'] > 1]
-        st.metric("多次通话号码数", len(multi_contact_phones))
+        multi_contact_count = len(
+            phone_stats[phone_stats['contact_count'] > 1])
+        st.metric("多次通话号码数", multi_contact_count)
         st.metric("平均每号码通话次数", f"{phone_stats['contact_count'].mean():.2f}")
 
     with col3:
@@ -313,55 +262,133 @@ def contact_delay_analyzer(file_path=None):
         st.metric("单次通话号码数", len(
             phone_stats[phone_stats['contact_count'] == 1]))
 
-    # 通话次数分布图
-    st.subheader("通话次数分布")
+
+def display_chart(phone_stats):
+    """Display contact count distribution chart"""
     chart = alt.Chart(phone_stats).mark_bar().encode(
         alt.X('contact_count:O', title='通话次数'),
         alt.Y('count():Q', title='电话号码数量')
-    ).properties(
-        title='电话号码通话次数分布'
-    )
+    ).properties(title='电话号码通话次数分布')
     st.altair_chart(chart, use_container_width=True)
 
-    # 多次通话号码详细分析
-    if len(multi_contact_phones) > 0:
-        st.subheader("多次通话号码分析")
 
-        # 筛选通话次数
-        min_contacts = int(multi_contact_phones['contact_count'].min())
-        max_contacts = int(multi_contact_phones['contact_count'].max())
+def handle_multi_contact_analysis(phone_stats):
+    """Handle multi-contact phone analysis with filtering"""
+    multi_contact_phones = phone_stats[phone_stats['contact_count'] > 1]
 
-        if min_contacts == max_contacts:
-            contact_threshold = min_contacts
-            st.write(f"所有多次通话号码的通话次数都是: {contact_threshold}")
-        else:
-            contact_threshold = st.slider(
-                "筛选通话次数大于等于",
-                min_value=min_contacts,
-                max_value=max_contacts,
-                value=min_contacts
-            )
+    if len(multi_contact_phones) == 0:
+        return
 
-        filtered_phones = phone_stats[phone_stats['contact_count']
-                                      >= contact_threshold]
-        st.write(f"通话次数 >= {contact_threshold} 的电话号码：")
-        st.dataframe(filtered_phones)
+    st.subheader("多次通话号码分析")
 
-        # 下载功能
-        csv_data = filtered_phones.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="下载筛选结果",
-            data=csv_data,
-            file_name=f"phone_stats_min_{contact_threshold}_contacts.csv",
-            mime="text/csv"
+    min_contacts = int(multi_contact_phones['contact_count'].min())
+    max_contacts = int(multi_contact_phones['contact_count'].max())
+
+    if min_contacts == max_contacts:
+        contact_threshold = min_contacts
+        st.write(f"所有多次通话号码的通话次数都是: {contact_threshold}")
+    else:
+        contact_threshold = st.slider(
+            "筛选通话次数大于等于",
+            min_value=min_contacts,
+            max_value=max_contacts,
+            value=min_contacts
         )
 
-    # 下载完整统计数据
+    filtered_phones = phone_stats[phone_stats['contact_count']
+                                  >= contact_threshold]
+    st.write(f"通话次数 >= {contact_threshold} 的电话号码：")
+    st.dataframe(filtered_phones)
+
+    # Download filtered results
+    csv_data = filtered_phones.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="下载筛选结果",
+        data=csv_data,
+        file_name=f"phone_stats_min_{contact_threshold}_contacts.csv",
+        mime="text/csv"
+    )
+
+
+def contact_customer_analyzer(file_path=None):
+    """Main analyzer function for phone number contact analysis"""
+    if 'show_analysis' not in st.session_state:
+        st.session_state.show_analysis = True
+
+    st.title("电话号码通话分析工具")
+
+    # Load and validate data
+    try:
+        df = pd.read_csv(file_path) if file_path else None
+    except Exception as e:
+        st.error(f"读取文件错误: {e}")
+        return
+
+    if df is None or df.empty:
+        st.info("请上传CSV文件或提供数据")
+        return
+
+    # Check required columns
+    required_cols = ['customerendpoint',
+                     'connectedtosystemtimestamp', 'initiationtimestamp']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        st.error(f"数据中缺少必要的列: {missing_cols}")
+        return
+
+    # Data preprocessing section
+    st.subheader("数据预处理")
+    
+    # 筛选VOICE渠道的记录
+    if 'channel' in df.columns:
+        df = df[df['channel'] == 'VOICE']
+        st.info(f"筛选VOICE渠道后，保留{len(df)}条记录")
+    
+    # 根据contactid去重，保留lastupdatetimestamp最新的记录
+    if 'contactid' in df.columns and 'lastupdatetimestamp' in df.columns:
+        df['lastupdatetimestamp'] = pd.to_datetime(df['lastupdatetimestamp'])
+        df = df.sort_values('lastupdatetimestamp').groupby('contactid').last().reset_index()
+        st.info(f"按contactid去重后，保留{len(df)}条最新记录")
+    
+    with st.expander("查看原始数据", expanded=False):
+        df_display = df.copy()
+        df_display.index = range(1, len(df_display) + 1)
+        st.dataframe(df_display)
+
+    st.download_button(
+        label="下载完整原始数据",
+        data=df.to_csv(index=False).encode('utf-8'),
+        file_name="contacts.csv",
+        mime="text/csv"
+    )
+
+    # Prepare data
+    df_clean = prepare_data(df)
+    if df_clean.empty:
+        st.warning("没有有效的电话号码数据")
+        return
+
+    # Calculate statistics
+    phone_stats = calculate_phone_stats(df_clean)
+
+    # Display results
+    st.subheader("电话号码通话统计")
+    st.dataframe(phone_stats)
+
+    st.subheader("统计概览")
+    display_metrics(phone_stats, df_clean)
+
+    st.subheader("通话次数分布")
+    display_chart(phone_stats)
+
+    # Multi-contact analysis
+    handle_multi_contact_analysis(phone_stats)
+
+    # Export data
     st.subheader("数据导出")
-    full_csv = phone_stats.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="下载完整统计数据",
-        data=full_csv,
+        data=phone_stats.to_csv(index=False).encode('utf-8'),
         file_name="phonenumber_contact_analysis.csv",
         mime="text/csv"
     )
@@ -485,7 +512,7 @@ if visualize_button:
 
 # 如果应该显示分析结果，则显示
 if st.session_state.show_analysis:
-    contact_delay_analyzer(os.path.join(folder_path, "ctr_data.csv"))
+    contact_customer_analyzer(os.path.join(folder_path, "ctr_data.csv"))
 
 # 搜索功能
 if 'contact_id' not in st.session_state:
