@@ -54,11 +54,11 @@ pip install -r requirements.txt
 ### Build and run the Application Locally
 
 ```bash
-streamlit run contact_trace_record_search.py
+streamlit run voice_contact_trace_record_search.py
 ```
 ### Or Build and run the Application on Cloud9
 
 ```bash
-streamlit run contact_trace_record_search.py --server.port 8080 --server.address=0.0.0.0 
+streamlit run voice_contact_trace_record_search.py --server.port 8080 --server.address=0.0.0.0 
 ```
 <img width="1610" alt="Contact Search" src="https://github.com/user-attachments/assets/91d9a551-7831-4db9-bf0d-12d23cc0224d">
